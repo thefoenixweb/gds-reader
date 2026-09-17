@@ -1,0 +1,19 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Cargo lock for libraries (keep for binaries/workspace)
+# Cargo.lock  ← intentionally kept for reproducible builds
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "backend/crates/gds-parser",
+    "backend/crates/layout-db",
+    "backend/crates/server",
+]

@@ -1,0 +1,13 @@
+{
+  "name": "gds-layout-studio-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "vite",
+    "build": "tsc && vite build"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
