@@ -17,10 +17,13 @@ fn err(status: StatusCode, msg: impl Into<String>) -> ApiError {
     (status, Json(json!({ "error": msg.into() })))
 }
 
+use axum::extract::DefaultBodyLimit;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/layout/load",  post(load_layout))
         .route("/api/layout/query", post(query_layout))
+        .layer(DefaultBodyLimit::disable())
 }
 
 pub async fn load_layout(

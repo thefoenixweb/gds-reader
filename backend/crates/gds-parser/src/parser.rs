@@ -277,6 +277,20 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[test]
+    fn test_parse_complex_gds() {
+        let path = "../../../data/samples/complex.gds";
+        if std::path::Path::new(path).exists() {
+            let bytes = std::fs::read(path).unwrap();
+            let reader = super::GdsReader::new(std::io::Cursor::new(bytes));
+            let mut parser = super::GdsParser::new(reader);
+            match parser.parse() {
+                Ok(layout) => println!("Success! Cells: {}", layout.cells.len()),
+                Err(e) => panic!("Error parsing complex.gds: {:?}", e),
+            }
+        }
+    }
+
     fn rec(rt: u8, dt: u8, data: &[u8]) -> Vec<u8> {
         let len = (4 + data.len()) as u16;
         let mut b = len.to_be_bytes().to_vec();

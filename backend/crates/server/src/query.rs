@@ -48,13 +48,17 @@ pub fn handle_query(index: &ShapeIndex, query: &ViewportQuery) -> ViewportRespon
     };
 
     let viewport = BoundingBox { x1: query.x1, y1: query.y1, x2: query.x2, y2: query.y2 };
+    
+    // Any shape or instance smaller than 3 pixels on screen will be skipped (or rendered as LOD bounding box)
+    let min_size_world = 3.0 / query.zoom.max(1e-9);
 
-    let shapes = index.query(&viewport)
+    let shapes = index.query(&viewport, min_size_world)
         .into_iter()
         .enumerate()
         .filter(|(_, entry)| {
             query.visible_layers.is_empty()
                 || query.visible_layers.contains(&entry.shape.layer())
+                || entry.shape.layer() == 999 // Always show LOD outlines
         })
         .map(|(id, entry)| shape_to_dto(id as u64, &entry.shape))
         .collect();
@@ -150,6 +154,14 @@ mod tests {
         assert!(json.contains("\"kind\""));
         assert!(json.contains("\"lodLevel\""));
         assert!(json.contains("\"shape\""));
+    }
+
+    #[test]
+    fn test_handle_query_culling() {
+        let index = make_index();
+        let vp = BoundingBox { x1: -5., y1: -5., x2: 15., y2: 15. };
+        let results = index.query(&vp, 0.0);
+        assert_eq!(results.len(), 2);
     }
 
     #[test]
