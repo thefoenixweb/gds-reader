@@ -51,7 +51,24 @@ export class Viewport {
       x2: wx2,
       y2: wy2,
       zoom: this.zoom,
-      visibleLayers: [] // To be filled by caller
+      visibleLayers: [], // To be filled by caller
+      knownCells: {} // To be filled by caller
+    };
+  }
+
+  /**
+   * Calculates which spatial tiles are currently visible.
+   */
+  getViewportQuery(): IViewportQuery {
+    const bbox = this.getBoundingBox();
+    return {
+      x1: bbox.x1,
+      y1: bbox.y1,
+      x2: bbox.x2,
+      y2: bbox.y2,
+      zoom: this.zoom,
+      visibleLayers: [],
+      knownCells: {}
     };
   }
 

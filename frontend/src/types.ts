@@ -56,10 +56,29 @@ export interface IViewportQuery {
   y2: number;
   zoom: number;
   visibleLayers: number[];
+  knownCells: Record<string, "cell" | "block" | "shape">;
+  maxShapes?: number;
+}
+
+export interface IInstance {
+  cellName: string;
+  transform: [number, number, number, number, number, number]; // m11, m12, tx, m21, m22, ty
+  cols: number;
+  rows: number;
+  colVector: [number, number];
+  rowVector: [number, number];
+}
+
+export interface ICellDefinition {
+  bbox: [number, number, number, number];
+  shapes: IShape[];
+  instances: IInstance[];
 }
 
 export interface IViewportResponse {
   shapes: IShape[];
+  instances: IInstance[];
+  cellDefinitions: Record<string, ICellDefinition>;
   lodLevel: "cell" | "block" | "shape";
 }
 

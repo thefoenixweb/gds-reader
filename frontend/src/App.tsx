@@ -16,6 +16,7 @@ export default function App() {
   
   const isDragging = useRef(false);
   const shapesRef = useRef<IShape[]>([]);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Sync layers state to ref for callbacks
   useEffect(() => {
@@ -35,8 +36,10 @@ export default function App() {
     const vp = new Viewport(canvas.width, canvas.height);
     const rnd = new LayoutRenderer(canvas, vp);
     
-    setViewport(vp);
-    setRenderer(rnd);
+    rnd.init().then(() => {
+      setViewport(vp);
+      setRenderer(rnd);
+    });
 
     const handleResize = () => {
       canvas.width = container.clientWidth;
@@ -54,28 +57,40 @@ export default function App() {
   const fastDraw = useCallback(() => {
     if (!viewport || !renderer) return;
     
-    const layerMap = new Map<number, ILayerInfo>();
-    for (const l of layersRef.current) {
-      layerMap.set(l.id, l);
-    }
-    renderer.layers = layerMap;
-    
     requestAnimationFrame(() => {
-      renderer.render(shapesRef.current);
+      renderer.render();
     });
   }, [viewport, renderer]);
 
   const fetchAndDraw = useCallback(() => {
     if (!viewport || !renderer || layersRef.current.length === 0) return;
-    
     const visibleLayerIds = layersRef.current.filter(l => l.visible).map(l => l.id);
-    const query = viewport.getBoundingBox();
-    query.visibleLayers = visibleLayerIds;
+    
+    const layerMap = new Map<number, ILayerInfo>();
+    for (const l of layersRef.current) {
+      layerMap.set(l.id, l);
+    }
+    renderer.layers = layerMap;
 
-    queryViewport(query).then(shapes => {
-      shapesRef.current = shapes;
+    const query = viewport.getViewportQuery();
+    query.visibleLayers = visibleLayerIds;
+    query.knownCells = Object.fromEntries(renderer.knownCells);
+    query.maxShapes = 20000;
+    
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    const signal = abortController.signal;
+    queryViewport(query, signal).then((res) => {
+      renderer.setViewportData(res);
       fastDraw();
-    }).catch(console.error);
+    }).catch(err => {
+      if (err.name !== 'AbortError') {
+        console.error(err);
+      }
+    });
   }, [viewport, renderer, fastDraw]);
 
   // Draw when layer toggles or initialization finishes
@@ -90,6 +105,7 @@ export default function App() {
       // Clear current view
       setLayers([]);
       shapesRef.current = [];
+      renderer?.clearData();
       fastDraw();
       
       await loadLayout(file);
@@ -103,6 +119,7 @@ export default function App() {
       }
       
       setLayers(fetchedLayers);
+      (window as any).layoutLoaded = true;
       // fetchAndDraw will be triggered by layers state change
     } catch (err) {
       console.error("Upload failed", err);

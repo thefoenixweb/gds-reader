@@ -12,6 +12,10 @@ fn decode_i16(d: &[u8]) -> i16 {
     i16::from_be_bytes([d[0], d[1]])
 }
 
+fn decode_u16(d: &[u8]) -> u16 {
+    u16::from_be_bytes([d[0], d[1]])
+}
+
 fn decode_i32(d: &[u8]) -> i32 {
     i32::from_be_bytes([d[0], d[1], d[2], d[3]])
 }
@@ -200,8 +204,8 @@ impl<R: Read> GdsParser<R> {
 
                 GdsRecord::ColRow(data) if data.len() >= 4 => {
                     if let ParserState::InAref(a) = &mut state {
-                        a.cols = decode_i16(&data[0..2]).max(1) as u16;
-                        a.rows = decode_i16(&data[2..4]).max(1) as u16;
+                        a.cols = decode_u16(&data[0..2]).max(1);
+                        a.rows = decode_u16(&data[2..4]).max(1);
                     }
                 }
 

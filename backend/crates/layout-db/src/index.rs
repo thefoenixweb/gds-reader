@@ -1,7 +1,8 @@
-use rstar::{RTree, RTreeObject, AABB};
+use rstar::{RTree, RTreeObject, AABB, SelectionFunction, Envelope};
 use crate::cell::{BoundingBox, Layout, Shape};
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub struct IndexedShape {
     pub shape: Shape,
     pub cell_name: String,
@@ -21,7 +22,7 @@ impl RTreeObject for IndexedShape {
     fn envelope(&self) -> Self::Envelope { self.envelope }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Transform {
     m11: f64, m12: f64, tx: f64,
     m21: f64, m22: f64, ty: f64,
@@ -80,6 +81,10 @@ impl Transform {
         let ty = -(m21 * self.tx + m22 * self.ty);
         Transform { m11, m12, m21, m22, tx, ty }
     }
+    
+    pub fn to_array(&self) -> [f64; 6] {
+        [self.m11, self.m12, self.tx, self.m21, self.m22, self.ty]
+    }
 }
 
 pub fn transform_shape(shape: &Shape, t: &Transform) -> Shape {
@@ -100,15 +105,60 @@ pub fn transform_shape(shape: &Shape, t: &Transform) -> Shape {
     }
 }
 
+#[derive(Clone)]
 pub struct IndexedInstance {
     pub cell_name: String,
     pub transform: Transform,
+    pub cols: u16,
+    pub rows: u16,
+    pub col_vector: [f64; 2],
+    pub row_vector: [f64; 2],
     envelope: AABB<[f64; 2]>,
 }
 
 impl RTreeObject for IndexedInstance {
     type Envelope = AABB<[f64; 2]>;
     fn envelope(&self) -> Self::Envelope { self.envelope }
+}
+
+#[derive(Clone)]
+pub struct SizeAndIntersectionFilter {
+    pub env: AABB<[f64; 2]>,
+    pub min_size: f64,
+}
+
+impl SelectionFunction<IndexedShape> for SizeAndIntersectionFilter {
+    fn should_unpack_parent(&self, envelope: &AABB<[f64; 2]>) -> bool {
+        if !self.env.intersects(envelope) { return false; }
+        let w = envelope.upper()[0] - envelope.lower()[0];
+        let h = envelope.upper()[1] - envelope.lower()[1];
+        w >= self.min_size || h >= self.min_size
+    }
+
+    fn should_unpack_leaf(&self, leaf: &IndexedShape) -> bool {
+        let envelope = leaf.envelope();
+        if !self.env.intersects(&envelope) { return false; }
+        let w = envelope.upper()[0] - envelope.lower()[0];
+        let h = envelope.upper()[1] - envelope.lower()[1];
+        w >= self.min_size || h >= self.min_size
+    }
+}
+
+impl SelectionFunction<IndexedInstance> for SizeAndIntersectionFilter {
+    fn should_unpack_parent(&self, envelope: &AABB<[f64; 2]>) -> bool {
+        if !self.env.intersects(envelope) { return false; }
+        let w = envelope.upper()[0] - envelope.lower()[0];
+        let h = envelope.upper()[1] - envelope.lower()[1];
+        w >= self.min_size || h >= self.min_size
+    }
+
+    fn should_unpack_leaf(&self, leaf: &IndexedInstance) -> bool {
+        let envelope = leaf.envelope();
+        if !self.env.intersects(&envelope) { return false; }
+        let w = envelope.upper()[0] - envelope.lower()[0];
+        let h = envelope.upper()[1] - envelope.lower()[1];
+        w >= self.min_size || h >= self.min_size
+    }
 }
 
 pub struct CellIndex {
@@ -178,24 +228,41 @@ impl ShapeIndex {
                     shape_entries.push(indexed);
                 }
                 
-                let mut add_instance = |inst_cell: &str, transform: Transform| {
+                let mut add_instance = |inst_cell: &str, transform: Transform, cols: u16, rows: u16, col_vec: [f64; 2], row_vec: [f64; 2]| {
                     if let Some(Some(child_bb)) = cell_bounds.get(inst_cell) {
                         let c_min = child_bb.lower();
                         let c_max = child_bb.upper();
-                        let pts = [
-                            transform.apply((c_min[0], c_min[1])),
-                            transform.apply((c_max[0], c_min[1])),
-                            transform.apply((c_min[0], c_max[1])),
-                            transform.apply((c_max[0], c_max[1])),
-                        ];
-                        let mut min_x = pts[0].0; let mut min_y = pts[0].1;
-                        let mut max_x = pts[0].0; let mut max_y = pts[0].1;
-                        for &(px, py) in &pts[1..] {
-                            if px < min_x { min_x = px; }
-                            if py < min_y { min_y = py; }
-                            if px > max_x { max_x = px; }
-                            if py > max_y { max_y = py; }
+                        
+                        let mut min_x = f64::MAX; let mut min_y = f64::MAX;
+                        let mut max_x = f64::MIN; let mut max_y = f64::MIN;
+                        
+                        let spacing_x = if cols > 1 { col_vec[0] / ((cols - 1) as f64) } else { 0.0 };
+                        let spacing_y = if cols > 1 { col_vec[1] / ((cols - 1) as f64) } else { 0.0 };
+                        let row_spacing_x = if rows > 1 { row_vec[0] / ((rows - 1) as f64) } else { 0.0 };
+                        let row_spacing_y = if rows > 1 { row_vec[1] / ((rows - 1) as f64) } else { 0.0 };
+                        
+                        let corners = [(0, 0), (cols.max(1) - 1, 0), (0, rows.max(1) - 1), (cols.max(1) - 1, rows.max(1) - 1)];
+                        for (i, j) in corners {
+                            let dx = (i as f64) * spacing_x + (j as f64) * row_spacing_x;
+                            let dy = (i as f64) * spacing_y + (j as f64) * row_spacing_y;
+                            let mut t = transform.clone();
+                            t.tx += dx;
+                            t.ty += dy;
+                            
+                            let pts = [
+                                t.apply((c_min[0], c_min[1])),
+                                t.apply((c_max[0], c_min[1])),
+                                t.apply((c_min[0], c_max[1])),
+                                t.apply((c_max[0], c_max[1])),
+                            ];
+                            for &(px, py) in &pts {
+                                if px < min_x { min_x = px; }
+                                if py < min_y { min_y = py; }
+                                if px > max_x { max_x = px; }
+                                if py > max_y { max_y = py; }
+                            }
                         }
+                        
                         expand_bb(min_x, min_y);
                         expand_bb(max_x, max_y);
                         
@@ -203,6 +270,10 @@ impl ShapeIndex {
                         inst_entries.push(IndexedInstance {
                             cell_name: inst_cell.to_string(),
                             transform,
+                            cols,
+                            rows,
+                            col_vector: col_vec,
+                            row_vector: row_vec,
                             envelope,
                         });
                     }
@@ -210,26 +281,12 @@ impl ShapeIndex {
 
                 for sref in &cell.srefs {
                     let t = Transform::from_gds(sref.position, sref.rotation_deg, sref.magnification, sref.mirror_x);
-                    add_instance(&sref.cell_name, t);
+                    add_instance(&sref.cell_name, t, 1, 1, [0.0, 0.0], [0.0, 0.0]);
                 }
                 
                 for aref in &cell.arefs {
                     let base_t = Transform::from_gds(aref.origin, aref.rotation_deg, aref.magnification, aref.mirror_x);
-                    let spacing_x = if aref.cols > 1 { aref.col_vector.0 / (aref.cols as f64) } else { 0.0 };
-                    let spacing_y = if aref.cols > 1 { aref.col_vector.1 / (aref.cols as f64) } else { 0.0 };
-                    let row_spacing_x = if aref.rows > 1 { aref.row_vector.0 / (aref.rows as f64) } else { 0.0 };
-                    let row_spacing_y = if aref.rows > 1 { aref.row_vector.1 / (aref.rows as f64) } else { 0.0 };
-                    
-                    for i in 0..aref.cols {
-                        for j in 0..aref.rows {
-                            let dx = (i as f64) * spacing_x + (j as f64) * row_spacing_x;
-                            let dy = (i as f64) * spacing_y + (j as f64) * row_spacing_y;
-                            let mut t = base_t.clone();
-                            t.tx += dx;
-                            t.ty += dy;
-                            add_instance(&aref.cell_name, t);
-                        }
-                    }
+                    add_instance(&aref.cell_name, base_t, aref.cols, aref.rows, [aref.col_vector.0, aref.col_vector.1], [aref.row_vector.0, aref.row_vector.1]);
                 }
                 
                 let bounding_box = if bb_min_x <= bb_max_x {
@@ -242,13 +299,170 @@ impl ShapeIndex {
                 
                 cells.insert(cell_name.clone(), CellIndex {
                     shapes: RTree::bulk_load(shape_entries),
-                    instances: RTree::bulk_load(inst_entries),
-                    bounding_box,
+                    instances: RTree::bulk_load(inst_entries.clone()),
+                    bounding_box: bounding_box.clone(),
                 });
+                
+                if let Some(top) = &layout.top_cell {
+                    if *top == cell_name {
+                        println!("Diagnostics for top cell '{}':", top);
+                        println!("Bounding box: {:?}", bounding_box);
+                        println!("Top-level instances: {}", inst_entries.len());
+                        for (idx, inst) in inst_entries.iter().enumerate().take(10) {
+                            println!("  Inst {}: cell={}, transform={:?}, env={:?}", idx, inst.cell_name, inst.transform, inst.envelope());
+                        }
+                    }
+                }
             }
         }
         
         ShapeIndex { cells, top_cell: layout.top_cell.clone() }
+    }
+    
+    pub fn query_instanced(&self, viewport: &BoundingBox, min_size: f64, max_shapes: Option<usize>) -> (Vec<IndexedShape>, Vec<IndexedInstance>) {
+        let mut res_shapes = Vec::new();
+        let mut res_instances = Vec::new();
+        
+        if let Some(top_name) = &self.top_cell {
+            let env = AABB::from_corners([viewport.x1, viewport.y1], [viewport.x2, viewport.y2]);
+            self.query_instanced_recursive(top_name, env, Transform::identity(), min_size, max_shapes, &mut res_shapes, &mut res_instances);
+        }
+        
+        (res_shapes, res_instances)
+    }
+
+    fn query_instanced_recursive(
+        &self, 
+        cell_name: &str, 
+        viewport: AABB<[f64; 2]>, 
+        transform: Transform, 
+        min_size: f64, 
+        max_shapes: Option<usize>,
+        res_shapes: &mut Vec<IndexedShape>, 
+        res_instances: &mut Vec<IndexedInstance>
+    ) {
+        if let Some(cell_idx) = self.cells.get(cell_name) {
+            let mag = (transform.m11 * transform.m11 + transform.m21 * transform.m21).sqrt();
+            let local_min_size = min_size / mag.max(1e-9);
+
+            // Calculate inverse transform to map viewport to local coordinate space
+            let det = transform.m11 * transform.m22 - transform.m12 * transform.m21;
+            if det.abs() < 1e-9 { return; }
+            let inv_m11 = transform.m22 / det;
+            let inv_m12 = -transform.m12 / det;
+            let inv_tx = (transform.m12 * transform.ty - transform.m22 * transform.tx) / det;
+            let inv_m21 = -transform.m21 / det;
+            let inv_m22 = transform.m11 / det;
+            let inv_ty = (transform.m21 * transform.tx - transform.m11 * transform.ty) / det;
+
+            let pts = [
+                [viewport.lower()[0], viewport.lower()[1]],
+                [viewport.upper()[0], viewport.lower()[1]],
+                [viewport.upper()[0], viewport.upper()[1]],
+                [viewport.lower()[0], viewport.upper()[1]],
+            ];
+            let mut local_min_x = f64::MAX;
+            let mut local_min_y = f64::MAX;
+            let mut local_max_x = f64::MIN;
+            let mut local_max_y = f64::MIN;
+            for p in &pts {
+                let x = inv_m11 * p[0] + inv_m12 * p[1] + inv_tx;
+                let y = inv_m21 * p[0] + inv_m22 * p[1] + inv_ty;
+                local_min_x = local_min_x.min(x);
+                local_min_y = local_min_y.min(y);
+                local_max_x = local_max_x.max(x);
+                local_max_y = local_max_y.max(y);
+            }
+            let local_env = AABB::from_corners([local_min_x, local_min_y], [local_max_x, local_max_y]);
+            let filter = SizeAndIntersectionFilter { env: local_env, min_size: local_min_size };
+
+            for indexed_shape in cell_idx.shapes.locate_with_selection_function(filter.clone()) {
+                if let Some(max) = max_shapes {
+                    if res_shapes.len() + res_instances.len() >= max {
+                        return;
+                    }
+                }
+                
+                // Return shape in GLOBAL coordinates
+                use crate::cell::Shape;
+                let mut new_shape = indexed_shape.shape.clone();
+                match &mut new_shape {
+                    Shape::Polygon { points, .. } | Shape::Path { points, .. } => {
+                        for pt in points.iter_mut() {
+                            let tx = transform.m11 * pt.0 + transform.m12 * pt.1 + transform.tx;
+                            let ty = transform.m21 * pt.0 + transform.m22 * pt.1 + transform.ty;
+                            pt.0 = tx;
+                            pt.1 = ty;
+                        }
+                    },
+                    Shape::Text { position, .. } => {
+                        let tx = transform.m11 * position.0 + transform.m12 * position.1 + transform.tx;
+                        let ty = transform.m21 * position.0 + transform.m22 * position.1 + transform.ty;
+                        position.0 = tx;
+                        position.1 = ty;
+                    }
+                }
+                res_shapes.push(IndexedShape::new(new_shape, cell_name.to_string()));
+            }
+
+            for indexed_inst in cell_idx.instances.locate_with_selection_function(filter) {
+                if let Some(max) = max_shapes {
+                    if res_shapes.len() + res_instances.len() >= max {
+                        return;
+                    }
+                }
+                
+                // Check if target cell is massive
+                let mut is_massive = false;
+                if let Some(target_idx) = self.cells.get(&indexed_inst.cell_name) {
+                    if target_idx.shapes.size() + target_idx.instances.size() > 5000 {
+                        is_massive = true;
+                    }
+                }
+                
+                // Also, if it's an array, it's harder to flatten recursively, so we only flatten SREFs (cols=1, rows=1)
+                // If it's massive AND an SREF, we flatten.
+                if is_massive && indexed_inst.cols <= 1 && indexed_inst.rows <= 1 {
+                    let inst_t = indexed_inst.transform;
+                    let combined_m11 = transform.m11 * inst_t.m11 + transform.m12 * inst_t.m21;
+                    let combined_m12 = transform.m11 * inst_t.m12 + transform.m12 * inst_t.m22;
+                    let combined_tx = transform.m11 * inst_t.tx + transform.m12 * inst_t.ty + transform.tx;
+                    let combined_m21 = transform.m21 * inst_t.m11 + transform.m22 * inst_t.m21;
+                    let combined_m22 = transform.m21 * inst_t.m12 + transform.m22 * inst_t.m22;
+                    let combined_ty = transform.m21 * inst_t.tx + transform.m22 * inst_t.ty + transform.ty;
+                    
+                    let combined_t = Transform {
+                        m11: combined_m11, m12: combined_m12, tx: combined_tx,
+                        m21: combined_m21, m22: combined_m22, ty: combined_ty,
+                    };
+                    
+                    self.query_instanced_recursive(&indexed_inst.cell_name, viewport, combined_t, min_size, max_shapes, res_shapes, res_instances);
+                } else {
+                    // Return instance in GLOBAL coordinates
+                    let mut new_inst = indexed_inst.clone();
+                    let inst_t = new_inst.transform;
+                    new_inst.transform.m11 = transform.m11 * inst_t.m11 + transform.m12 * inst_t.m21;
+                    new_inst.transform.m12 = transform.m11 * inst_t.m12 + transform.m12 * inst_t.m22;
+                    new_inst.transform.tx = transform.m11 * inst_t.tx + transform.m12 * inst_t.ty + transform.tx;
+                    new_inst.transform.m21 = transform.m21 * inst_t.m11 + transform.m22 * inst_t.m21;
+                    new_inst.transform.m22 = transform.m21 * inst_t.m12 + transform.m22 * inst_t.m22;
+                    new_inst.transform.ty = transform.m21 * inst_t.tx + transform.m22 * inst_t.ty + transform.ty;
+                    
+                    // Transform array vectors
+                    let cx = new_inst.col_vector[0];
+                    let cy = new_inst.col_vector[1];
+                    new_inst.col_vector[0] = transform.m11 * cx + transform.m12 * cy;
+                    new_inst.col_vector[1] = transform.m21 * cx + transform.m22 * cy;
+                    
+                    let rx = new_inst.row_vector[0];
+                    let ry = new_inst.row_vector[1];
+                    new_inst.row_vector[0] = transform.m11 * rx + transform.m12 * ry;
+                    new_inst.row_vector[1] = transform.m21 * rx + transform.m22 * ry;
+                    
+                    res_instances.push(new_inst);
+                }
+            }
+        }
     }
 
     pub fn query(&self, viewport: &BoundingBox, min_size: f64) -> Vec<IndexedShape> {
@@ -329,6 +543,10 @@ impl ShapeIndex {
                 self.query_recursive(&instance.cell_name, child_vp, child_t, min_size, results);
             }
         }
+    }
+
+    pub fn get_cell_bounds(&self, cell_name: &str) -> Option<AABB<[f64; 2]>> {
+        self.cells.get(cell_name).and_then(|c| c.bounding_box)
     }
 
     pub fn shape_count(&self) -> usize {
